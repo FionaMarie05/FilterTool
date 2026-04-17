@@ -1,12 +1,12 @@
 import tkinter as tk
 from tkinter import ttk
-#import pandas as pd
+import pandas as pd
 from collections import defaultdict
 from tkinter import filedialog, messagebox
 import os
 import re
 
-
+MAX_BPS = 4_000_000  # 4 Mbps in Bytes pro Sekunde
 
 #def lade_lab_datei(pfad):
 #    daten = []
@@ -174,8 +174,12 @@ def get_untergruppenname(hauptgruppe, untergruppe):
 
 class AccordionWithCheckbox(tk.Frame):
 
-    def __init__(self, master, hauptgruppe, untergruppen, *args, **kwargs):
+    def __init__(self, master, hauptgruppe, untergruppen, untergruppen_bps=None, on_selection_change=None, *args, **kwargs):
         super().__init__(master, *args, **kwargs)
+
+        self.on_selection_change = on_selection_change
+        self.untergruppen_bps = untergruppen_bps or {}
+
         self.hauptgruppe = hauptgruppe
         self.untergruppen = untergruppen
         self.is_expanded = False
@@ -189,10 +193,16 @@ class AccordionWithCheckbox(tk.Frame):
         self.toggle_button.pack(side='left')
 
         # Checkbox für Auswahl der Hauptgruppe
-        self.var_haupt = tk.BooleanVar()
-        self.checkbox = tk.Checkbutton(header_frame, text=hauptgruppe, variable=self.var_haupt, font=('Arial', 10, 'bold'), 
-                                       command=self.on_hauptgruppe_toggle)
-        self.checkbox.pack(side='left', padx=5)
+        self.haken_label = tk.Label(header_frame, text='✓', font=('Arial', 10, 'bold'), cursor='hand2')
+        self.haken_label.pack(side='left', padx=5)
+        self.haken_label.bind("<Button-1>", self.on_haken_click)
+
+        self.hauptgruppen_label = tk.Label(header_frame, text=hauptgruppe, font=('Arial', 10, 'bold'), 
+                                       cursor='hand2')
+        self.hauptgruppen_label.pack(side='left')
+        self.hauptgruppen_label.bind("<Button-1>", self.on_haken_click)
+
+        self.hauptgruppe_selected = True        
 
         # Frame für Untergruppen, zunächst versteckt
         self.content_frame = tk.Frame(self)
@@ -201,13 +211,19 @@ class AccordionWithCheckbox(tk.Frame):
 
         # Untergruppen-Checkboxen
         self.subgroup_vars = []
+        untergruppen_bps = untergruppen_bps or {}
+
         for untergruppe, eintraege in sorted(untergruppen.items(), key=lambda x: len(x[1]), reverse=True):
             var = tk.BooleanVar(value=True)
             uname = untergruppe if untergruppe else "(keine Untergruppe)"
-            cb_text = f"{uname} ({len(eintraege)} Einträge)"
+            bps_wert = untergruppen_bps.get(untergruppe, 0)
+            bps_formatiert = format_bytes_per_sec(bps_wert)
+            cb_text = f"{uname} ({len(eintraege)} Einträge, {bps_formatiert})"
             cb = tk.Checkbutton(self.content_frame, text=cb_text, variable=var, command=self.on_untergruppe_toggle)
             cb.pack(anchor='w', padx=20)
             self.subgroup_vars.append((var, untergruppe, eintraege))
+
+        self.update_haken_farbe()
 
 
     def toggle(self):
@@ -221,16 +237,55 @@ class AccordionWithCheckbox(tk.Frame):
             self.is_expanded = True
 
 
-    def on_hauptgruppe_toggle(self):
-        neuer_status = self.var_haupt.get()
-        # Alle Untergruppen-Checkboxen entsprechend setzen
-        for var, _, _ in self.subgroup_vars:
-            var.set(neuer_status)
+    def on_haken_click(self, event=None):
+        # Alle auswählen oder abwählen, je nach aktuellem Zustand
+        neuer_status = not self.hauptgruppe_selected
+        self.set_hauptgruppe_status(neuer_status)
+        if self.on_selection_change:
+        # Verzögere den Aufruf, um sicher zu sein, dass alle Checkboxen aktualisiert sind
+            self.after_idle(self.on_selection_change)
+
 
     def on_untergruppe_toggle(self):
-        # Wenn alle Untergruppen ausgewählt sind, Hauptgruppe auswählen, sonst abwählen
         alle_ausgewaehlt = all(var.get() for var, _, _ in self.subgroup_vars)
-        self.var_haupt.set(alle_ausgewaehlt)
+        keine_ausgewaehlt = not any(var.get() for var, _, _ in self.subgroup_vars)
+
+        if alle_ausgewaehlt:
+            self.hauptgruppe_selected = True
+        elif keine_ausgewaehlt:
+            self.hauptgruppe_selected = False
+        else:
+            self.hauptgruppe_selected = True
+
+        self.update_haken_farbe()
+        if self.on_selection_change:
+            # Verzögere den Aufruf
+            self.after_idle(self.on_selection_change)
+
+
+    def update_haken_farbe(self):
+        # Wenn alle Untergruppen ausgewählt sind, Hauptgruppe auswählen, sonst abwählen oder grauen Haken setzen
+        alle_ausgewaehlt = all(var.get() for var, _, _ in self.subgroup_vars)
+        keine_ausgewaehlt = not any(var.get() for var, _, _ in self.subgroup_vars)
+        
+        if alle_ausgewaehlt:
+            self.haken_label.config(fg='black', text='✓')  # Schwarzer Haken
+        elif keine_ausgewaehlt:
+            self.haken_label.config(text='☐', fg='black')  # Kein Haken
+        else:
+            self.haken_label.config(fg='gray', text='✓')  # Grauer Haken
+
+
+    def get_hauptgruppe_status(self):
+        return self.hauptgruppe_selected
+    
+
+    def set_hauptgruppe_status(self, status: bool):
+        self.hauptgruppe_selected = status
+        # Alle Untergruppen entsprechend setzen
+        for var, _, _ in self.subgroup_vars:
+            var.set(status)
+        self.update_haken_farbe()
 
 
 
@@ -249,71 +304,92 @@ class FilterTool(tk.Tk):
         self.check_vars = []
         
         # Suchfeld
-        self.such_label = ttk.Label(self, text="Gruppen suchen:")
-        self.such_label.pack(pady=(10,0))
+        self.search_label = ttk.Label(self, text="Gruppen suchen:")
+        self.search_label.pack(pady=(10,0))
         
-        self.such_entry = ttk.Entry(self)
-        self.such_entry.pack(fill='x', padx=10)
-        self.such_entry.bind("<KeyRelease>", self.filter_gruppen)
+        self.search_entry = ttk.Entry(self)
+        self.search_entry.pack(fill='x', padx=10)
+        self.search_entry.bind("<KeyRelease>", self.filter_gruppen)
 
-        # Scrollbar und Canvas für Checkboxen
-        self.canvas = tk.Canvas(self)
-        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-        self.scrollable_frame = ttk.Frame(self.canvas)
+    # Scrollbar und Canvas für Checkboxen
+        #Hauptcontainer für linke Seite (Liste + Scrollbar)
+        self.left_frame = ttk.Frame(self)
+        self.left_frame.pack(side='left', fill='both', expand=True, padx=(10,5), pady=10)
 
-        self.scrollable_frame.bind(
-            "<Configure>",
-            lambda e: self.canvas.configure(
-                scrollregion=self.canvas.bbox("all")
-            )
-        )
+        # Bps display in left_frame
+        self.bps_label = ttk.Label(self.left_frame, text="Ausgewählte Menge: 0 B/s", font=('Arial', 10, 'bold'))
+        self.bps_label.pack(fill='x', padx=10, pady=(0,10))
 
-        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        # Canvas with scrollbar in left_frame
+        self.canvas = tk.Canvas(self.left_frame, bg=self.cget('bg'), borderwidth=0, highlightthickness=0)
+        self.canvas.pack(side='left', fill='both', expand=True)
+
+        self.scrollbar = ttk.Scrollbar(self.left_frame, orient='vertical', command=self.canvas.yview)
+        self.scrollbar.pack(side='right', fill='y')
+
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
 
-        self.canvas.pack(side="left", fill="both", expand=True, padx=(10,0), pady=10)
-        self.scrollbar.pack(side="right", fill="y", pady=10)
+        self.scrollable_frame = ttk.Frame(self.canvas)
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor='nw')
+
+
+    # Main container for right half (results display)
+        self.right_frame = ttk.Frame(self)
+        self.right_frame.pack(side='right', fill='both', expand=False, padx=(5,10), pady=10)
+
+        # Frame for open file in upper half
+        self.open_file_frame = ttk.Frame(self.right_frame)
+        self.open_file_frame.pack(side='top', fill='x', pady=(0, 10))
 
         # Button zum Auswählen der einzulesenden Datei
-        btn_datei_frame = ttk.Frame(self)
-        btn_datei_frame.pack(fill='x', padx=10, pady=(10, 5))
-        btn_datei_oeffnen = ttk.Button(btn_datei_frame, text="Datei öffnen", command=self.datei_oeffnen_und_einlesen)
-        btn_datei_oeffnen.pack(fill='x', padx=10, pady=(10, 5))
+        btn_open_file = ttk.Button(self.right_frame, text="Datei öffnen", command=self.datei_oeffnen_und_einlesen)
+        btn_open_file.pack(fill='x', padx=10, pady=(0, 5))
 
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill='x', padx=10, pady=(0,10))
+        # Upper container for right half (Buttons)
+        self.btn_frame = ttk.Frame(self.right_frame)
+        self.btn_frame.pack(side='top', fill='x', pady=(0,10))
 
         # Button zum Anzeigen der ausgewählten Elemente
-        self.btn_show = ttk.Button(btn_frame, text="Ausgewählte Gruppen anzeigen", command=self.show_selected_groups)
+        self.btn_show = ttk.Button(self.btn_frame, text="Ausgewählte Gruppen anzeigen", command=self.show_selected_groups)
         self.btn_show.pack(side='left')
 
         # Export der ausgewählten Elemente als txt/lab Datei
-        self.btn_export_lab = ttk.Button(btn_frame, text="Auswahl als LAB/TXT speichern", command=self.export_selected_to_lab_or_txt)
+        self.btn_export_lab = ttk.Button(self.btn_frame, text="Auswahl als LAB/TXT speichern", command=self.export_selected_to_lab_or_txt)
         self.btn_export_lab.pack(side='left', padx=5)
 
         # Button zum Auswählen bzw Abwählen aller Gruppen
-        self.btn_alle_waehlen = ttk.Button(btn_frame, text="Alle auswählen/abwählen", command=self.toggle_alle_waehlen)
+        self.btn_alle_waehlen = ttk.Button(self.btn_frame, text="Alle auswählen/abwählen", command=self.toggle_alle_waehlen)
         self.btn_alle_waehlen.pack(side='left', padx= 10)
         
         # Export der ausgewählten Elemente als Excel Datei
-        #self.btn_export_excel = ttk.Button(btn_frame, text="Auswahl als Excel speichern", command=export_selected_to_excel)
-        #self.btn_export_excel.pack(side='left', padx=15)
+        self.btn_export_excel = ttk.Button(self.btn_frame, text="Auswahl als Excel speichern", command=self.export_selected_to_excel)
+        self.btn_export_excel.pack(side='left', padx=15)
 
-        # Textfeld zur Anzeige der Ergebnisse
-        self.result_text = tk.Text(self, height=50, width=100)
-        self.result_text.pack(padx=10, pady=(0,10))
-        self.result_text.configure(state='disabled')    # Textfeld initial auf "disabled" setzen
+        # Results display with scrollbar in right_frame
+        self.result_text = tk.Text(self.right_frame, height=50, width=100)
+        self.result_text.pack(side='left', fill='both', expand=True)
+        self.result_text.configure(state='disabled')  # initial deaktiviert
+
+        self.text_scrollbar = ttk.Scrollbar(self.right_frame, orient='vertical', command=self.result_text.yview)
+        self.text_scrollbar.pack(side='right', fill='y')
+        self.result_text.configure(yscrollcommand=self.text_scrollbar.set)
 
         self.erstelle_checkbuttons(original_daten)
+        self.bind_mousewheel()
 
 
     def erstelle_checkbuttons(self, gruppen):
         # Berechne Bytes/s pro Gruppe
         haupt_bps, unter_bps = berechne_bytes_pro_sekunde(gruppen)
 
-        self.hauptgruppen_vars = {}
+        self.hauptgruppen_accordions = {}
         self.untergruppen_vars = []
         self.check_vars = []
+
 
         # Alte Checkboxen entfernen
         for widget in self.scrollable_frame.winfo_children():
@@ -329,19 +405,22 @@ class FilterTool(tk.Tk):
             bps_haupt_formatiert = format_bytes_per_sec(bps_haupt)
             total_entries = sum(len(e) for e in untergruppen.values())
 
+            untergruppen_bps = unter_bps.get(hauptgruppe, {})
+
             # Accordion mit Checkbox erstellen
             accordion = AccordionWithCheckbox(
                 self.scrollable_frame,
                 hauptgruppe=f"{hauptgruppe} ({total_entries} Einträge, {bps_haupt_formatiert})",
-                untergruppen=untergruppen
+                untergruppen=untergruppen, untergruppen_bps = untergruppen_bps,
+                on_selection_change = self.update_selected_bps
             )
             accordion.pack(fill='x', pady=5)
 
             # Hauptgruppen-Checkbox auf True setzen (ausgewählt)
-            accordion.var_haupt.set(True)
+            accordion.set_hauptgruppe_status(True)
             
             # Checkbox der Hauptgruppe speichern
-            self.hauptgruppen_vars[hauptgruppe] = accordion.var_haupt
+            self.hauptgruppen_accordions[hauptgruppe] = accordion
 
             # Checkboxen der Untergruppen speichern
             for var, untergruppe, eintraege in accordion.subgroup_vars:
@@ -349,7 +428,38 @@ class FilterTool(tk.Tk):
                 self.check_vars.append((var, hauptgruppe, untergruppe, eintraege))
 
             # Auch Hauptgruppen Checkbox in check_vars speichern
-            self.check_vars.append((accordion.var_haupt, hauptgruppe, '', []))
+            self.check_vars.append((accordion, hauptgruppe, '', []))
+            self.update_selected_bps()
+
+
+    def update_selected_bps(self):
+        total_bps = 0.0
+        for var, hauptgruppe, untergruppe, _ in self.untergruppen_vars:
+            if var.get():
+                accordion = self.hauptgruppen_accordions.get(hauptgruppe)
+                if accordion:
+                    bps_wert = accordion.untergruppen_bps.get(untergruppe, 0)
+                    total_bps += bps_wert
+
+        percent = (total_bps / MAX_BPS) * 100 if MAX_BPS > 0 else 0
+        formated = format_bytes_per_sec(total_bps)
+        max_formated = format_bytes_per_sec(MAX_BPS)
+
+        text = f"Ausgewählte Menge: {formated} ({percent:.2f} % of {max_formated})"
+        self.bps_label.config(text=text)
+
+    def _on_mousewheel(self, event):
+        if event.delta:
+            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        elif event.num == 4:
+            self.canvas.yview_scroll(-1, "units")
+        elif event.num == 5:
+            self.canvas.yview_scroll(1, "units")
+
+    def bind_mousewheel(self):
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)   # Windows, macOS
+        self.canvas.bind_all("<Button-4>", self._on_mousewheel)     # Linux scroll up
+        self.canvas.bind_all("<Button-5>", self._on_mousewheel)     # Linux scroll down
 
 
     def datei_oeffnen_und_einlesen(self):
@@ -404,25 +514,27 @@ class FilterTool(tk.Tk):
 
     def toggle_alle_waehlen(self):
         # Prüfe, ob alle Hauptgruppen aktuell ausgewählt sind
-        alle_ausgewaehlt = all(var.get() for var in self.hauptgruppen_vars.values())
+        alle_ausgewaehlt = all(acc.get_hauptgruppe_status() for acc in self.hauptgruppen_accordions.values())
 
         neuer_status = not alle_ausgewaehlt  # Falls alle an, dann aus, sonst an
 
         # Setze alle Hauptgruppen
-        for var_haupt in self.hauptgruppen_vars.values():
-            var_haupt.set(neuer_status)
+        for acc in self.hauptgruppen_accordions.values():
+            acc.set_hauptgruppe_status(neuer_status)
 
         # Setze alle Untergruppen
         for var_unter, _, _, _ in self.untergruppen_vars:
             var_unter.set(neuer_status)
+
+        self.update_selected_bps()
 
 
     def show_selected_groups(self):
         self.result_text.configure(state='normal')  # Schreibschutz vorübergehend aufheben
         self.result_text.delete(1.0, tk.END)
 
-        for hauptgruppe, var_haupt in self.hauptgruppen_vars.items():
-            if var_haupt.get():
+        for hauptgruppe, accordion in self.hauptgruppen_accordions.items():
+            if accordion.get_hauptgruppe_status():
                 self.result_text.insert(tk.END, f"Hauptgruppe: {hauptgruppe}\n")
 
                 for var_unter, hg, ug, eintraege in self.untergruppen_vars:
@@ -455,7 +567,7 @@ class FilterTool(tk.Tk):
         for var, hauptgruppe, untergruppe, eintraege in self.check_vars:
             if var.get():
                 alle_ausgewaehlten.extend(eintraege)
-        #
+        
         if not alle_ausgewaehlten:
             messagebox.showwarning("Keine Auswahl", "Bitte wähle mindestens eine Gruppe zum Export aus.")
             return
@@ -481,6 +593,12 @@ class FilterTool(tk.Tk):
 
         try:
             with open(dateipfad, 'w', encoding='utf-8') as f:
+                # Fester Header
+                f.write("[SETTINGS]\n")
+                f.write("Version;V1.1\n")
+                f.write("MultirasterSeperator;&\n\n")
+                f.write("[RAMCELL]\n")
+
                 for eintrag in alle_ausgewaehlten:
                     zeile = ';'.join(eintrag)
                     f.write(zeile + '\n')
@@ -489,30 +607,33 @@ class FilterTool(tk.Tk):
             messagebox.showerror("Fehler", f"Fehler beim Speichern:\n{e}")
 
 
-   #def export_selected_to_excel(self):
+    def export_selected_to_excel(self):
         # Alle ausgewählten Einträge sammeln
-#       alle_ausgewaehlten = []
+        alle_ausgewaehlten = []
 
-#       for var, hauptgruppe, untergruppe, eintraege in self.check_vars:
-#           if var.get():
-#               alle_ausgewaehlten.extend(eintraege)
+        for var, hauptgruppe, untergruppe, eintraege in self.check_vars:
+            if var.get():
+                alle_ausgewaehlten.extend(eintraege)
+
+        if not alle_ausgewaehlten:
+            messagebox.showwarning("Keine Auswahl", "Bitte wähle mindestens eine Gruppe zum Export aus.")
+            return
 
         # Dateidialog zum Speichern öffnen
-#       dateipfad = filedialog.asksaveasfilename(
-#       defaultextension=".xlsx",
-#       filetypes=[("Excel Dateien", "*.xlsx"), ("Alle Dateien", "*.*")],
-#       title="Speichern als")
+        dateipfad = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel Dateien", "*.xlsx"), ("Alle Dateien", "*.*")],
+            title="Speichern als")
         
-#       if not dateipfad:
-#            return  # Benutzer hat abgebrochen
+        if not dateipfad:
+            return  # Benutzer hat abgebrochen
 
-        # Dataframe erstellen
-#       try:
-#           df = pd.DataFrame(alle_ausgewaehlten, columns=['Spalte1', 'Spalte2'])
-#           df.to_excel(dateipfad, index=False)
-#           messagebox.showinfo("Erfolg", f"Excel-Datei wurde erfolgreich exportiert nach:\n{dateipfad}")
-#       except Exception as e:
-#           messagebox.showerror("Fehler", f"Export fehlgeschlagen:\n{e}")
+        try:
+            df = pd.DataFrame(alle_ausgewaehlten, columns=['Spalte1', 'Spalte2'])
+            df.to_excel(dateipfad, index=False)
+            messagebox.showinfo("Erfolg", f"Excel-Datei wurde erfolgreich exportiert nach:\n{dateipfad}")
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Export fehlgeschlagen:\n{e}")
 
 
 
